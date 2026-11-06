@@ -203,7 +203,15 @@ await test("client bundle registers a conversation view and mounts a strict-code
 	const src = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 	vm.runInNewContext(src, { window: { __ModuleLoader__: { load: (r) => { registration = r; } } }, console });
 	const jsx = (type, props, key) => ({ type, props, key });
-	const react = { useState: (v) => [v, () => {}], useEffect() {}, useRef: () => ({ current: null }), useMemo: (f) => f(), Fragment: "Fragment" };
+	const react = {
+		useState: (init) => [typeof init === "function" ? init() : init, () => {}],
+		useEffect() {},
+		useRef: () => ({ current: null }),
+		useMemo: (f) => f(),
+		useContext: (ctx) => ctx,
+		createContext: (v) => v,
+		Fragment: "Fragment",
+	};
 	const mod = registration.factory((name) => (name === "react" ? react : name === "react/jsx-runtime" ? { jsx, jsxs: jsx } : (() => { throw new Error(name); })()));
 	assert.deepEqual([...mod.inject], ["slots", "remote"]);
 	let contribution;
@@ -220,6 +228,195 @@ await test("client bundle registers a conversation view and mounts a strict-code
 		for (const p of d.parameters) assert.equal(p.codec.mode, "strict", `${d.method}.${p.name} must use a strict codec`);
 	}
 	assert.deepEqual([...contribution.descriptors].map((d) => d.method).sort(), ["backfill", "clearStore", "getStep", "listSessions", "listSteps"]);
+});
+
+console.log("i18n");
+
+/** Load the client bundle in a sandbox with optional stored language. */
+function loadClient(stored) {
+	const source = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+	// a mutable localStorage so storeLang/storedLang behave like a browser
+	const store = new Map(stored ? [["dsh-ctx-visualizer:lang", stored]] : []);
+	const sandbox = {
+		window: { __ModuleLoader__: {} },
+		console,
+		navigator: { language: "en-US" },
+		localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+	};
+	let registration;
+	sandbox.window.__ModuleLoader__.load = (r) => { registration = r; };
+	vm.runInNewContext(source, sandbox);
+	const jsx = (type, props, key) => ({ type, props, key });
+	const react = {
+		useState: (init) => [typeof init === "function" ? init() : init, () => {}],
+		useEffect() {},
+		useRef: () => ({ current: null }),
+		useMemo: (f) => f(),
+		Fragment: "Fragment",
+	};
+	const mod = registration.factory((name) => (name === "react" ? react : name === "react/jsx-runtime" ? { jsx, jsxs: jsx } : (() => { throw new Error(name); })()));
+	// mirror what apply() does on boot: a stored choice wins, else the environment
+	mod.__test.setLang(stored ?? mod.__test.langFromEnvironment(null));
+	return mod.__test;
+}
+
+const CJK = /[\u4e00-\u9fff]/;
+const flatten = (node, out = []) => {
+	if (!node) return out;
+	if (Array.isArray(node)) { for (const n of node) flatten(n, out); return out; }
+	if (typeof node === "string" || typeof node === "number") { out.push(String(node)); return out; }
+	if (typeof node !== "object") return out;
+	if (node.props?.children !== undefined) flatten(node.props.children, out);
+	for (const v of Object.values(node.props ?? {})) if (typeof v === "string") out.push(v);
+	return out;
+};
+
+const record = {
+	id: "cv-1", sessionId: "S", origin: "loop", provider: "deepseek", model: "deepseek-flash",
+	turn: 2, step: 3, startedAt: 1_700_000_000_000, endedAt: 1_700_000_001_200, durationMs: 1200, status: "tool-calls",
+	request: {
+		messages: [
+			{ id: "s", role: "system", cvKey: "s", content: [{ type: "text", text: "# Identity\nYou are an agent" }], source: { kind: "plugin", plugin: "system-prompt" } },
+			{ id: "u", role: "user", cvKey: "u", content: [{ type: "text", text: "check the venue" }], source: { kind: "user" } },
+			{ id: "a", role: "assistant", cvKey: "a", content: [{ type: "tool-call", id: "c1", name: "mcp__tos__whoami", arguments: "{}" }], source: { kind: "model" } },
+		],
+		messageSummaries: [{ role: "user", kind: "user", origin: "user input", chars: 10 }],
+		tools: [{ name: "mcp__tos__whoami", description: "who am i", inputSchema: {} }],
+		toolCount: 1, approxChars: 900, temperature: 0.2, maxTokens: 1000,
+	},
+	response: {
+		text: "done", reasoning: "thinking", toolCalls: [{ id: "c1", name: "mcp__tos__whoami", arguments: "{}" }],
+		usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 900 }, finishReason: "tool-calls",
+	},
+	toolRuns: [{ callId: "c1", rootCallId: "c1", nested: false, name: "mcp__tos__whoami", arguments: {}, startedAt: 1, endedAt: 2, durationMs: 1, isError: false, content: [{ type: "text", text: "ok" }] }],
+	error: null,
+};
+const summary = {
+	id: "cv-1", turn: 2, step: 3, status: "tool-calls", model: "deepseek-flash", startedAt: 1_700_000_000_000,
+	durationMs: 1200, requestChars: 900, deltaChars: 300, messageCount: 3, toolCount: 1, parsedToolCalls: 1, toolRuns: 1,
+	newMessageIds: ["a"], droppedCount: 0, systemChanged: false, toolsChanged: false,
+	breakdown: { system: 100, userInput: 50, toolResult: 0, injection: 0, assistant: 80, tools: 40 },
+	toolCallNames: ["mcp__tos__whoami"], finishReason: "tool-calls", usage: record.response.usage, origin: "loop", purpose: undefined,
+};
+
+await test("English renders every view without Chinese UI text", async () => {
+	const t = loadClient("en");
+	const views = {
+		RequestTab: t.RequestTab({ record, summary }),
+		ResponseTab: t.ResponseTab({ record }),
+		ToolsTab: t.ToolsTab({ record }),
+		JsonTab: t.JsonTab({ record }),
+		ArchitectureTab: t.ArchitectureTab({ record, summary }),
+		TurnCard: t.TurnCard({ group: { key: "t2", turn: 2, steps: [summary], preview: "check the venue", aux: false }, selected: true, onSelect() {}, scale: 900 }),
+		TurnTimeline: t.TurnTimeline({ group: { key: "t2", turn: 2, steps: [summary], preview: "check the venue" }, selected: "cv-1", onSelect() {} }),
+	};
+	for (const [name, tree] of Object.entries(views)) {
+		const text = flatten(tree).join(" ");
+		const offending = text.match(new RegExp(`[^ ]*${CJK.source}[^ ]*`, "g"));
+		assert.equal(offending, null, `${name} still has Chinese UI text: ${offending}`);
+	}
+	assert.match(flatten(views.RequestTab).join(" "), /User content|New this step|Tools/);
+});
+
+await test("Chinese renders Chinese UI text", async () => {
+	const t = loadClient("zh");
+	t.setLang("zh");
+	const text = flatten(t.RequestTab({ record, summary })).join(" ");
+	assert.match(text, CJK);
+	assert.match(text, /本步新增|用户/);
+});
+
+await test("language follows the Harness locale, and an explicit choice wins", async () => {
+	const t = loadClient(null);
+	// en-US browser, locale service says zh → Chinese wins over the browser
+	assert.equal(t.langFromEnvironment({ getLocale: () => ({ active: "zh" }) }), "zh");
+	assert.equal(t.langFromEnvironment({ getLocale: () => ({ active: "en" }) }), "en");
+	assert.equal(t.langFromEnvironment(null), "en", "en-US browser without a locale service");
+	// an explicit stored choice overrides both
+	t.storeLang("zh");
+	assert.equal(t.storedLang(), "zh");
+	t.setLang(t.storedLang() ?? t.langFromEnvironment({ getLocale: () => ({ active: "en" }) }));
+	assert.equal(t.getLang(), "zh");
+});
+
+await test("every tr() pair is complete and the English side has no Chinese", async () => {
+	const source = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+	// walk to each `tr(` and read its two arguments as raw source windows
+	const problems = [];
+	let index = source.indexOf("tr(");
+	while (index !== -1) {
+		const isDefinition = source.slice(index - 9, index).includes("const tr");
+		if (!isDefinition) {
+			const rest = source.slice(index + 3);
+			// first argument must be a literal that closes before the second begins
+			const closeQuote = rest[0];
+			if (closeQuote === `"` || closeQuote === `'` || closeQuote === "`") {
+				let i = 1, depth = 0, end = -1;
+				while (i < rest.length) {
+					if (closeQuote === "`" && rest[i] === "$" && rest[i + 1] === "{") { depth++; i += 2; continue; }
+					if (closeQuote === "`" && depth > 0 && rest[i] === "}") { depth--; i++; continue; }
+					if (rest[i] === "\\") { i += 2; continue; }
+					if (rest[i] === closeQuote && depth === 0) { end = i; break; }
+					i++;
+				}
+				if (end === -1) problems.push(`unterminated first argument at ${index}`);
+				else {
+					const after = rest.slice(end + 1).trimStart();
+					if (!after.startsWith(",")) problems.push(`tr() at ${index} has a single argument`);
+					else {
+						const en = after.slice(1).trimStart();
+						if (!en.startsWith(`"`) && !en.startsWith("`")) problems.push(`tr() at ${index} has a non-literal second argument`);
+						else {
+							// read the second argument and assert no CJK
+							const q2 = en[0];
+							let j = 1, d2 = 0, e2 = -1;
+							while (j < en.length) {
+								if (q2 === "`" && en[j] === "$" && en[j + 1] === "{") { d2++; j += 2; continue; }
+								if (q2 === "`" && d2 > 0 && en[j] === "}") { d2--; j++; continue; }
+								if (en[j] === "\\") { j += 2; continue; }
+								if (en[j] === q2 && d2 === 0) { e2 = j; break; }
+								j++;
+							}
+							const body = e2 === -1 ? en : en.slice(1, e2);
+							if (/[\u4e00-\u9fff]/.test(body)) problems.push(`tr() English side still Chinese near ${index}: ${body.slice(0, 40)}`);
+						}
+					}
+				}
+			} else problems.push(`tr() at ${index} has a non-literal first argument`);
+		}
+		index = source.indexOf("tr(", index + 1);
+	}
+	assert.deepEqual(problems, []);
+});
+
+await test("no bare Chinese string literal remains in the client bundle", async () => {
+	const source = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+	const CJK_ONLY = /[\u4e00-\u9fff]/;
+	const offenders = [];
+	for (let i = 0; i < source.length; i++) {
+		const ch = source[i];
+		if (ch === "/" && source[i + 1] === "/") { while (i < source.length && source[i] !== "\n") i++; continue; }
+		if (ch === "/" && source[i + 1] === "*") { i = source.indexOf("*/", i + 2) + 1; continue; }
+		if ((ch === `"` || ch === `'` || ch === "`") && source[i - 1] !== "\\") {
+			const quote = ch;
+			let j = i + 1, depth = 0, body = "";
+			while (j < source.length) {
+				if (quote === "`" && source[j] === "$" && source[j + 1] === "{") { depth++; body += "${"; j += 2; continue; }
+				if (quote === "`" && depth > 0 && source[j] === "}") { depth--; body += "}"; j++; continue; }
+				if (source[j] === "\\") { body += source[j] + source[j + 1]; j += 2; continue; }
+				if (source[j] === quote && depth === 0) break;
+				body += source[j]; j++;
+			}
+			if (CJK_ONLY.test(body)) {
+				const before = source.slice(Math.max(0, i - 6), i);
+				const isTrArg = /tr\(\s*$/.test(before);
+				const isLanguageName = body === "中文";
+				if (!isTrArg && !isLanguageName) offenders.push(source.slice(i, j + 1).slice(0, 80));
+			}
+			i = j;
+		}
+	}
+	assert.deepEqual(offenders, []);
 });
 
 console.log(process.exitCode ? "\nFAILED" : `\n${passed} passed`);
