@@ -1,0 +1,7 @@
+# The dsh-ctx-visualizer bundle patch: one row, the whole plugin.
+# The host half (package main) is a pure event observer + Remote/Inspect
+# provider; the client half (`dsh.client`) is discovered from this same
+# Loader row's package and composed into the web boot graph.
+- insert:
+    - id: ctx-visualizer
+      name: 'dsh-ctx-visualizer'

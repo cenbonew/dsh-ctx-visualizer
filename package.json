@@ -1,0 +1,60 @@
+{
+  "name": "dsh-ctx-visualizer",
+  "description": "DeepSeek Harness plugin: see exactly what context every model call receives (system vs user content, tools), the parsed tool calls, tool executions and follow-up calls, as a per-turn timeline and a dynamic architecture view",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "cenbonew",
+  "homepage": "https://github.com/cenbonew/dsh-ctx-visualizer#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cenbonew/dsh-ctx-visualizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cenbonew/dsh-ctx-visualizer/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "llm",
+    "context",
+    "observability",
+    "agent"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node tests/plugin.test.mjs"
+  }
+}

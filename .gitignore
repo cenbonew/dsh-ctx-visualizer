@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+# local capture dumps must never be committed (they contain full model contexts)
+captures/
+*.capture.json
